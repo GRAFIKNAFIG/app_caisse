@@ -1,280 +1,418 @@
 import 'package:flutter/material.dart';
-import '../theme/theme_premium.dart';
 
-import '../models/ticket.dart';
-import '../models/ticket_line.dart';
+import '../models/category.dart';
 import '../models/subcategory.dart';
+import '../models/ticket_line.dart';
 import '../services/storage_service.dart';
-import '../data/categories_data.dart';
 
-import 'caisse/caisse_categories.dart';
-import 'caisse/caisse_subcategories.dart';
-import 'caisse/caisse_ticket_list.dart';
-import 'caisse/caisse_payment.dart';
-import 'caisse/caisse_keypad_modal.dart';
+import '../widgets/category_button.dart';
+import '../widgets/subcategory_button.dart';
+import '../widgets/ticket_view.dart';
+import '../widgets/keypad_pv.dart';
+import '../widgets/keypad_payment.dart';
 
 class CaissePage extends StatefulWidget {
-  const CaissePage({super.key});
+  final List<Category> categories;
+
+  const CaissePage({super.key, required this.categories});
 
   @override
   State<CaissePage> createState() => _CaissePageState();
 }
 
 class _CaissePageState extends State<CaissePage> {
-  String? selectedCategory;
+  int selectedCategoryIndex = 0;
   SubCategory? selectedSubCategory;
   int quantity = 1;
-  bool isRefund = false;
 
-  String paymentMethod = 'Espèces';
-  double? cashGiven;
+  final List<TicketLine> ticketLines = [];
 
-  final List<TicketLine> lines = [];
+  bool refundMode = false;
 
-  double get totalTicket =>
-      lines.fold(0.0, (s, e) => s + e.total);
+  // PV keypad
+  bool showPVKeypad = false;
+  String pvText = '';
+  double? pvValue;
 
-  double get changeDue =>
-      cashGiven == null ? 0 : (cashGiven! - totalTicket);
+  // Payment keypad
+  bool showPaymentKeypad = false;
+  String payText = '';
+  double? payValue;
 
-  // CLAVIER MODAL — VERSION FINALE
-  void _openKeypadModal({
-    required String title,
-    required double? initialValue,
-    required String? extraInfo,
-    required void Function(double value) onValidate,
-  }) {
-    showDialog(
-      context: context,
-      barrierDismissible: true,
-      builder: (_) => CaisseKeypadModal(
-        title: title,
-        initialValue: initialValue,
-        extraInfo: extraInfo,
-        onValidate: onValidate,
-      ),
-    );
-  }
+  double get total =>
+      ticketLines.fold(0.0, (sum, line) => sum + line.total);
 
-  void _onCategorySelected(String name) {
-    setState(() {
-      selectedCategory = name;
-      selectedSubCategory = null;
-      quantity = 1;
-    });
-  }
+  double get change =>
+      payValue == null ? 0 : payValue! - total;
 
-  void _onSubCategorySelected(SubCategory sub) {
-    if (sub.isVariable) {
-      setState(() {
-        selectedSubCategory = sub;
-      });
+  void _addProduct() {
+    if (selectedSubCategory == null) return;
 
-      _openKeypadModal(
-        title: 'Prix variable',
-        initialValue: null,
-        extraInfo: 'Qté : $quantity',
-        onValidate: (value) {
-          final line = TicketLine(
-            category: selectedCategory ?? '',
-            subCategory: sub.label,
-            quantity: quantity,
-            unitPrice: value,
-            isRefund: isRefund,
-          );
-          setState(() {
-            lines.add(line);
-            selectedSubCategory = null;
-            quantity = 1;
-          });
-        },
-      );
-      return;
+    double price = selectedSubCategory!.isVariable
+        ? (pvValue ?? 0)
+        : selectedSubCategory!.fixedPrice!;
+
+    if (price <= 0) return;
+
+    final bool isRefund = refundMode;
+
+    if (isRefund) {
+      price = -price;
     }
 
-    final line = TicketLine(
-      category: selectedCategory ?? '',
-      subCategory: sub.label,
-      quantity: quantity,
-      unitPrice: sub.fixedPrice ?? 0,
-      isRefund: isRefund,
-    );
-
     setState(() {
-      lines.add(line);
-      quantity = 1;
-      selectedSubCategory = null;
-    });
-  }
-
-  void _onPaymentChanged(String method) {
-    setState(() {
-      paymentMethod = method;
-      if (method != 'Espèces') {
-        cashGiven = null;
-      }
-    });
-
-    if (method == 'Espèces') {
-      _openKeypadModal(
-        title: 'Montant reçu',
-        initialValue: cashGiven,
-        extraInfo: 'Total : ${totalTicket.toStringAsFixed(2)} €',
-        onValidate: (value) {
-          setState(() {
-            cashGiven = value;
-          });
-        },
+      ticketLines.add(
+        TicketLine(
+          category: widget.categories[selectedCategoryIndex].name,
+          subCategory: selectedSubCategory!.label,
+          unitPrice: price,
+          quantity: quantity,
+          isRefund: isRefund,
+        ),
       );
-    }
-  }
 
-  void _onQuantityChanged(int q) {
-    setState(() {
-      quantity = q.clamp(1, 10);
-    });
-  }
-
-  void _removeLine(int index) {
-    setState(() => lines.removeAt(index));
-  }
-
-  void _clearTicket() {
-    setState(() {
-      lines.clear();
-      quantity = 1;
       selectedSubCategory = null;
-      cashGiven = null;
+      pvText = '';
+      pvValue = null;
+      refundMode = false;
     });
   }
 
-  Future<void> _validateTicket() async {
-    if (lines.isEmpty) return;
-
-    if (paymentMethod == 'Espèces') {
-      if (cashGiven == null || cashGiven! < totalTicket) {
-        _openKeypadModal(
-          title: 'Montant reçu',
-          initialValue: cashGiven,
-          extraInfo: 'Total : ${totalTicket.toStringAsFixed(2)} €',
-          onValidate: (value) {
-            setState(() {
-              cashGiven = value;
-            });
-          },
-        );
+  void _onPVKey(String key) {
+    setState(() {
+      if (key == 'C') {
+        pvText = '';
+        pvValue = null;
         return;
       }
-    }
+      if (key == '←') {
+        if (pvText.isNotEmpty) {
+          pvText = pvText.substring(0, pvText.length - 1);
+          pvValue = double.tryParse(pvText.replaceAll(',', '.'));
+        }
+        return;
+      }
 
-    final now = DateTime.now();
+      pvText += key;
+      pvValue = double.tryParse(pvText.replaceAll(',', '.'));
+    });
+  }
 
-    final ticket = Ticket(
-      id: now.millisecondsSinceEpoch.toString(),
-      dateTime: now,
-      lines: List<TicketLine>.from(lines),
-      paymentMethod: paymentMethod,
-    );
+  void _validatePV() {
+    _addProduct();
+    setState(() => showPVKeypad = false);
+  }
 
-    await StorageService.instance.saveTicket(ticket);
+  void _onPayKey(String key) {
+    setState(() {
+      if (key == 'C') {
+        payText = '';
+        payValue = null;
+        return;
+      }
+      if (key == '←') {
+        if (payText.isNotEmpty) {
+          payText = payText.substring(0, payText.length - 1);
+          payValue = double.tryParse(payText.replaceAll(',', '.'));
+        }
+        return;
+      }
 
-    _clearTicket();
+      payText += key;
+      payValue = double.tryParse(payText.replaceAll(',', '.'));
+    });
+  }
+
+  Future<void> _validatePayment() async {
+    await StorageService.instance.saveTicket(ticketLines);
+
+    setState(() {
+      ticketLines.clear();
+      showPaymentKeypad = false;
+      payText = '';
+      payValue = null;
+      refundMode = false;
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: PremiumTheme.background,
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(10),
-          child: Column(
-            children: [
-              Row(
-                children: [
-                  Text('Caisse', style: PremiumTheme.title),
-                  const Spacer(),
-                  TextButton(
-                    onPressed: () {
-                      setState(() => isRefund = !isRefund);
+    final currentCategory = widget.categories[selectedCategoryIndex];
+
+    return Stack(
+      children: [
+        Row(
+          children: [
+            // COLONNE GAUCHE : CATÉGORIES
+            Expanded(
+              flex: 2,
+              child: ListView.builder(
+                itemCount: widget.categories.length,
+                itemBuilder: (context, index) {
+                  return CategoryButton(
+                    label: widget.categories[index].name,
+                    selected: index == selectedCategoryIndex,
+                    onTap: () {
+                      setState(() {
+                        selectedCategoryIndex = index;
+                        selectedSubCategory = null;
+                      });
                     },
-                    child: Text(
-                      isRefund ? 'Mode remboursement' : 'Mode vente',
-                      style: PremiumTheme.label,
-                    ),
-                  ),
-                ],
+                  );
+                },
               ),
+            ),
 
-              const SizedBox(height: 10),
+            // COLONNE CENTRALE : SOUS-CATÉGORIES
+            Expanded(
+              flex: 5,
+              child: ListView(
+                children: currentCategory.subCategories.map((sub) {
+                  return SubCategoryButton(
+                    label: sub.label,
+                    selected: sub == selectedSubCategory,
+                    priceText: sub.isVariable ? null : "${sub.fixedPrice} €",
+                    onTap: () {
+                      setState(() {
+                        selectedSubCategory = sub;
+                        quantity = 1;
 
-              Expanded(
-                child: Row(
-                  children: [
-                    Expanded(
-                      flex: 2,
-                      child: CaisseCategories(
-                        categories:
-                            categories.map((c) => c.name).toList(),
-                        selectedCategory: selectedCategory,
-                        onCategorySelected: _onCategorySelected,
+                        if (sub.isVariable) {
+                          showPVKeypad = true;
+                          pvText = '';
+                          pvValue = null;
+                        } else {
+                          pvValue = sub.fixedPrice;
+                          _addProduct();
+                        }
+                      });
+                    },
+                  );
+                }).toList(),
+              ),
+            ),
+
+            // COLONNE DROITE : TICKET
+            Expanded(
+              flex: 3,
+              child: Column(
+                children: [
+                  if (refundMode)
+                    Container(
+                      margin: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.red.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: Colors.red),
                       ),
-                    ),
-
-                    const SizedBox(width: 10),
-
-                    Expanded(
-                      flex: 4,
-                      child: CaisseSubCategories(
-                        categories: categories,
-                        selectedCategory: selectedCategory,
-                        selectedSubCategory: selectedSubCategory,
-                        onSubCategorySelected: _onSubCategorySelected,
-                        hide: selectedSubCategory != null &&
-                            selectedSubCategory!.isVariable,
-                      ),
-                    ),
-
-                    const SizedBox(width: 10),
-
-                    Expanded(
-                      flex: 2,
-                      child: Column(
+                      child: const Row(
                         children: [
+                          Icon(Icons.warning_amber_rounded,
+                              color: Colors.red, size: 20),
+                          SizedBox(width: 8),
                           Expanded(
-                            child: CaisseTicketList(
-                              lines: lines,
-                              total: totalTicket,
-                              onRemoveLine: _removeLine,
-                              onClearTicket: _clearTicket,
-                            ),
-                          ),
-
-                          const SizedBox(height: 8),
-
-                          SizedBox(
-                            height: 180,
-                            child: CaissePayment(
-                              paymentMethod: paymentMethod,
-                              onPaymentChanged: _onPaymentChanged,
-                              onValidateTicket: _validateTicket,
-                              quantity: quantity,
-                              onQuantityChanged: _onQuantityChanged,
-                              cashGiven: cashGiven,
-                              changeDue: changeDue,
-                              total: totalTicket,
+                            child: Text(
+                              "MODE REMBOURSEMENT ACTIF : le prochain article sera enregistré en négatif.",
+                              style: TextStyle(
+                                color: Colors.red,
+                                fontWeight: FontWeight.w600,
+                              ),
                             ),
                           ),
                         ],
                       ),
                     ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
+
+                  Expanded(
+                    child: TicketView(
+                      lines: ticketLines,
+                      onDelete: (i) {
+                        setState(() => ticketLines.removeAt(i));
+                      },
+                    ),
+                  ),
+
+                  Container(
+                    padding: const EdgeInsets.all(12),
+                    child: Column(
+                      children: [
+                        Container(
+                          padding: const EdgeInsets.all(14),
+                          decoration: BoxDecoration(
+                            color: Colors.white.withOpacity(0.7),
+                            borderRadius: BorderRadius.circular(16),
+                            border: Border.all(color: const Color(0xFFE5E5EA)),
+                          ),
+                          child: Row(
+                            children: [
+                              const Text(
+                                "Total",
+                                style: TextStyle(
+                                  fontSize: 16,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                              const Spacer(),
+                              Text(
+                                "${total.toStringAsFixed(2)} €",
+                                style: TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                  color: total >= 0
+                                      ? const Color(0xFF0070E0)
+                                      : Colors.red,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+
+                        const SizedBox(height: 12),
+
+                        // LIGNE 1 : CB + REMBOURSEMENT
+                        SizedBox(
+  width: double.infinity,
+  child: ElevatedButton.icon(
+    onPressed: () {
+      setState(() {
+        ticketLines.clear();
+        refundMode = false;
+      });
+    },
+    icon: const Icon(Icons.delete, color: Colors.red),
+    label: const Text(
+      "Annuler le ticket",
+      style: TextStyle(color: Colors.red, fontWeight: FontWeight.bold),
+    ),
+    style: ElevatedButton.styleFrom(
+      backgroundColor: Colors.white,
+      side: const BorderSide(color: Colors.red),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(14),
       ),
+    ),
+  ),
+),
+const SizedBox(height: 12),
+
+                        Row(
+                          children: [
+                            Expanded(
+                              child: ElevatedButton(
+                                onPressed: ticketLines.isEmpty
+                                    ? null
+                                    : () => setState(() {
+                                          showPaymentKeypad = true;
+                                          payText = '';
+                                          payValue = null;
+                                        }),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.white.withOpacity(0.7),
+                                  foregroundColor: Colors.black,
+                                  side: const BorderSide(color: Color(0xFFE5E5EA)),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(14),
+                                  ),
+                                ),
+                                child: const Text("CB"),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: ElevatedButton(
+                                onPressed: () {
+                                  setState(() {
+                                    refundMode = true;
+                                  });
+                                },
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.white.withOpacity(0.7),
+                                  foregroundColor: Colors.red,
+                                  side: const BorderSide(color: Color(0xFFE5E5EA)),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(14),
+                                  ),
+                                ),
+                                child: const Text("Remboursement"),
+                              ),
+                            ),
+                          ],
+                        ),
+
+                        const SizedBox(height: 8),
+
+                        // LIGNE 2 : ESPÈCES + CHÈQUE
+                        Row(
+                          children: [
+                            Expanded(
+                              child: ElevatedButton(
+                                onPressed: ticketLines.isEmpty
+                                    ? null
+                                    : () => setState(() {
+                                          showPaymentKeypad = true;
+                                          payText = '';
+                                          payValue = null;
+                                        }),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.white.withOpacity(0.7),
+                                  foregroundColor: Colors.black,
+                                  side: const BorderSide(color: Color(0xFFE5E5EA)),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(14),
+                                  ),
+                                ),
+                                child: const Text("Espèces"),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: ElevatedButton(
+                                onPressed: ticketLines.isEmpty
+                                    ? null
+                                    : () => setState(() {
+                                          showPaymentKeypad = true;
+                                          payText = '';
+                                          payValue = null;
+                                        }),
+                                style: ElevatedButton.styleFrom(
+                                  backgroundColor: Colors.white.withOpacity(0.7),
+                                  foregroundColor: Colors.black,
+                                  side: const BorderSide(color: Color(0xFFE5E5EA)),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(14),
+                                  ),
+                                ),
+                                child: const Text("Chèque"),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+
+        if (showPVKeypad)
+          KeypadPV(
+            display: pvText,
+            onKeyPress: _onPVKey,
+            onValidate: _validatePV,
+          ),
+
+        if (showPaymentKeypad)
+          KeypadPayment(
+            display: payText,
+            total: total,
+            change: change,
+            onKeyPress: _onPayKey,
+            onValidate: _validatePayment,
+          ),
+      ],
     );
   }
 }
